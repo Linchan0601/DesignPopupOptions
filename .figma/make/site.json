@@ -1,0 +1,10 @@
+{
+  "description": "Create customizable popups with multiple design options to enhance user engagement and improve conversion rates for businesses and marketers.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

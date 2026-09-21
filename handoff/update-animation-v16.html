@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Software Update Animation — v16</title>
+<!--
+  Software update / waiting screen — handoff v16
+  Self-contained: no build step, no dependencies. Open directly in a browser.
+  Structure:
+    - .stage           full-screen dark scene
+    - .bg-*            three selectable ambient backgrounds (aurora / stream / pulse)
+    - #percent         live progress (auto-advances to 100%)
+    - .whatsnew        swipeable "What's new" changelog deck
+  Integration notes for devs:
+    - Replace the fake progress loop (see START PROGRESS) with real update %.
+    - When progress hits 100, swap the heading to "Update complete" (handled).
+    - Keep the "Do not power off" warning persistent for the whole flow.
+-->
+<style>
+  :root {
+    --bg: #0b1220;
+    --blue-200: #bfdbfe;
+    --blue-300: #93c5fd;
+    --blue-400: #60a5fa;
+    --slate-400: #94a3b8;
+    --rose-400: #fb7185;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "Noto Sans SC", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    color: #fff;
+  }
+  .stage {
+    position: relative;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: var(--bg);
+    padding: 40px 24px;
+  }
+  /* ambient gradient wash under every background */
+  .wash {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(90% 70% at 50% 10%, #1e3a8a55, transparent 60%),
+      radial-gradient(80% 60% at 80% 100%, #6d28d955, transparent 55%);
+  }
+  .bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+  .bg[hidden] { display: none; }
+
+  /* ---- Background A: Aurora ---- */
+  .blob { position: absolute; border-radius: 9999px; filter: blur(90px); }
+  .blob.a { left: -96px; top: -96px; width: 460px; height: 460px;
+    background: radial-gradient(circle, #3b82f6aa, transparent 70%); animation: aurora-a 14s ease-in-out infinite; }
+  .blob.b { right: -80px; top: 33%; width: 420px; height: 420px;
+    background: radial-gradient(circle, #6366f199, transparent 70%); animation: aurora-b 16s ease-in-out infinite; }
+  .blob.c { bottom: -120px; left: 33%; width: 400px; height: 400px;
+    background: radial-gradient(circle, #22d3ee66, transparent 70%); animation: aurora-a 18s ease-in-out 2s infinite; }
+  @keyframes aurora-a { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(8%,6%) scale(1.15); } }
+  @keyframes aurora-b { 0%,100% { transform: translate(0,0) scale(1.1); } 50% { transform: translate(-10%,-8%) scale(.9); } }
+
+  /* ---- Background B: Stream (downloading) ---- */
+  .bg-stream {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 20%, #000 60%, transparent);
+            mask-image: linear-gradient(to bottom, transparent, #000 20%, #000 60%, transparent);
+  }
+  .trail { position: absolute; top: 0; width: 1px;
+    background: linear-gradient(to bottom, transparent, #7dd3fc); }
+  @keyframes stream-fall {
+    0% { transform: translateY(-140px); opacity: 0; }
+    15%,80% { opacity: 1; }
+    100% { transform: translateY(70vh); opacity: 0; }
+  }
+
+  /* ---- Background C: Pulse (sync) ---- */
+  .bg-pulse { display: flex; align-items: center; justify-content: center; }
+  .pulse-core { position: absolute; width: 300px; height: 300px; border-radius: 9999px;
+    filter: blur(24px); background: radial-gradient(circle, #3b82f655, transparent 70%); }
+  .pulse-ring { position: absolute; width: 560px; height: 560px; border-radius: 9999px;
+    border: 1px solid rgba(96,165,250,.25); }
+  @keyframes sync-pulse { 0% { transform: scale(.35); opacity: .55; } 100% { transform: scale(1); opacity: 0; } }
+
+  /* ---- Foreground content ---- */
+  .content { position: relative; width: 100%; max-width: 460px; text-align: center; }
+  .badge {
+    margin: 0 auto; width: 80px; height: 80px; border-radius: 24px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2);
+    backdrop-filter: blur(6px); animation: float 4s ease-in-out infinite;
+  }
+  @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+  .badge svg { width: 40px; height: 40px; color: var(--blue-300); }
+
+  .pct { margin-top: 24px; display: flex; align-items: baseline; justify-content: center; }
+  .pct b { font-size: 56px; font-weight: 900; line-height: 1; font-variant-numeric: tabular-nums; }
+  .pct span { font-size: 22px; font-weight: 700; color: var(--blue-300); }
+  .heading { margin: 4px 0 0; font-size: 20px; font-weight: 700; color: var(--blue-200); }
+  .sub { margin: 0; font-size: 14px; color: var(--slate-400); }
+
+  .bar { margin: 20px auto 0; height: 10px; max-width: 380px; border-radius: 9999px;
+    background: rgba(255,255,255,.1); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 60%; border-radius: 9999px;
+    background: linear-gradient(90deg,#60a5fa,#818cf8,#60a5fa); background-size: 200% 100%;
+    transition: width .9s ease; animation: shimmer 2s linear infinite; }
+  @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+
+  .whatsnew { margin: 28px auto 0; max-width: 380px; text-align: left;
+    border-radius: 16px; padding: 20px; background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.1); backdrop-filter: blur(6px); }
+  .wn-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .wn-head span { font-size: 12px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; color: var(--blue-300); }
+  .nav { display: flex; gap: 6px; }
+  .nav button { width: 28px; height: 28px; border: 0; border-radius: 9999px; cursor: pointer;
+    background: rgba(255,255,255,.1); color: #fff; font-size: 15px; transition: background .15s; }
+  .nav button:hover { background: rgba(255,255,255,.2); }
+  .tag { display: inline-block; border-radius: 9999px; padding: 2px 10px; font-size: 11px; font-weight: 700; }
+  .tag.New { background: rgba(52,211,153,.2); color: #6ee7b7; }
+  .tag.Improved { background: rgba(96,165,250,.2); color: #93c5fd; }
+  .tag.Fixed { background: rgba(251,191,36,.2); color: #fcd34d; }
+  .wn-title { margin: 8px 0 0; font-size: 16px; font-weight: 700; }
+  .wn-body { margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: var(--slate-400); }
+  .dots { display: flex; justify-content: center; gap: 6px; margin-top: 16px; }
+  .dots button { height: 6px; width: 6px; border: 0; border-radius: 9999px; cursor: pointer;
+    background: rgba(255,255,255,.25); transition: all .2s; }
+  .dots button.on { width: 20px; background: var(--blue-400); }
+
+  .warn { margin-top: 24px; font-size: 15px; font-weight: 600; color: var(--rose-400); }
+  .warn b { font-weight: 900; }
+
+  .swap { animation: fade-swap .4s ease; }
+  @keyframes fade-swap { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* background picker */
+  .picker { position: absolute; top: 20px; right: 20px; z-index: 10; display: flex; gap: 4px;
+    padding: 4px; border-radius: 9999px; background: rgba(255,255,255,.1);
+    border: 1px solid rgba(255,255,255,.15); backdrop-filter: blur(6px); }
+  .picker button { border: 0; cursor: pointer; padding: 4px 12px; border-radius: 9999px;
+    font-size: 12px; font-weight: 600; text-transform: capitalize; color: rgba(255,255,255,.7);
+    background: transparent; transition: all .15s; }
+  .picker button.on { background: rgba(255,255,255,.9); color: #0f172a; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="wash"></div>
+
+    <!-- Background A: Aurora -->
+    <div class="bg bg-aurora" id="bg-aurora">
+      <div class="blob a"></div>
+      <div class="blob b"></div>
+      <div class="blob c"></div>
+    </div>
+
+    <!-- Background B: Stream -->
+    <div class="bg bg-stream" id="bg-stream" hidden></div>
+
+    <!-- Background C: Pulse -->
+    <div class="bg bg-pulse" id="bg-pulse" hidden>
+      <div class="pulse-core"></div>
+      <div class="pulse-ring" style="animation: sync-pulse 5.2s ease-out 0s infinite"></div>
+      <div class="pulse-ring" style="animation: sync-pulse 5.2s ease-out 1.3s infinite"></div>
+      <div class="pulse-ring" style="animation: sync-pulse 5.2s ease-out 2.6s infinite"></div>
+      <div class="pulse-ring" style="animation: sync-pulse 5.2s ease-out 3.9s infinite"></div>
+    </div>
+
+    <!-- background picker -->
+    <div class="picker" id="picker">
+      <button data-bg="aurora" class="on">aurora</button>
+      <button data-bg="stream">stream</button>
+      <button data-bg="pulse">pulse</button>
+    </div>
+
+    <div class="content">
+      <div class="badge">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 4v9m0 0 3.5-3.5M12 13 8.5 9.5M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3"
+            stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </div>
+
+      <div class="pct"><b id="percent">60</b><span>%</span></div>
+      <h1 class="heading" id="heading">Updating software…</h1>
+      <p class="sub"><span id="stage-label">Installing components</span> · The system will restart automatically</p>
+
+      <div class="bar"><i id="bar"></i></div>
+
+      <!-- What's new deck -->
+      <div class="whatsnew">
+        <div class="wn-head">
+          <span>What&#39;s new in v1.3.0</span>
+          <div class="nav">
+            <button id="prev" aria-label="Previous">&#8249;</button>
+            <button id="next" aria-label="Next">&#8250;</button>
+          </div>
+        </div>
+        <div id="card"></div>
+        <div class="dots" id="dots"></div>
+      </div>
+
+      <p class="warn"><b>Do not power off</b> the device during the upgrade.</p>
+    </div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- data ----
+  var STAGES = [
+    { label: "Downloading update", until: 30 },
+    { label: "Verifying packages", until: 60 },
+    { label: "Installing components", until: 90 },
+    { label: "Finalizing", until: 100 }
+  ];
+  var WHATS_NEW = [
+    { tag: "New", title: "Whole-unit transfer rules", body: "Loose remainders are flagged as non-transferable during stock moves." },
+    { tag: "Improved", title: "Faster cabinet sync", body: "RFID reconciliation is up to 40% quicker on large cabinets." },
+    { tag: "New", title: "Authorized device login", body: "One-tap sign-in on pre-authorized ward terminals." },
+    { tag: "Fixed", title: "Expiry alert accuracy", body: "Batch-level expiry now accounts for partial packs." }
+  ];
+
+  var $ = function (id) { return document.getElementById(id); };
+  var pct = 60, card = 0;
+
+  // ---- backgrounds ----
+  // build falling trails for the stream background
+  (function buildStream() {
+    var host = $("bg-stream");
+    for (var i = 0; i < 18; i++) {
+      var t = document.createElement("span");
+      t.className = "trail";
+      t.style.left = ((i * 5.5 + (i % 3) * 2) % 100) + "%";
+      t.style.height = (60 + (i % 4) * 40) + "px";
+      t.style.opacity = (0.25 + (i % 3) * 0.2).toString();
+      t.style.animation = "stream-fall " + (3.2 + (i % 5) * 0.6) + "s linear " + ((i % 6) * 0.7) + "s infinite";
+      host.appendChild(t);
+    }
+  })();
+
+  var picker = $("picker");
+  picker.addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    var name = b.getAttribute("data-bg");
+    ["aurora", "stream", "pulse"].forEach(function (n) {
+      $("bg-" + n).hidden = n !== name;
+    });
+    Array.prototype.forEach.call(picker.children, function (c) {
+      c.classList.toggle("on", c === b);
+    });
+  });
+
+  // ---- what's new deck ----
+  function renderCard() {
+    var d = WHATS_NEW[card];
+    var wrap = $("card");
+    wrap.className = "swap";
+    wrap.innerHTML =
+      '<span class="tag ' + d.tag + '">' + d.tag + "</span>" +
+      '<h3 class="wn-title">' + d.title + "</h3>" +
+      '<p class="wn-body">' + d.body + "</p>";
+    // restart animation
+    void wrap.offsetWidth;
+
+    var dots = $("dots");
+    dots.innerHTML = "";
+    WHATS_NEW.forEach(function (_, i) {
+      var btn = document.createElement("button");
+      if (i === card) btn.className = "on";
+      btn.setAttribute("aria-label", "Card " + (i + 1));
+      btn.addEventListener("click", function () { card = i; renderCard(); });
+      dots.appendChild(btn);
+    });
+  }
+  $("prev").addEventListener("click", function () { card = (card - 1 + WHATS_NEW.length) % WHATS_NEW.length; renderCard(); });
+  $("next").addEventListener("click", function () { card = (card + 1) % WHATS_NEW.length; renderCard(); });
+  renderCard();
+  setInterval(function () { card = (card + 1) % WHATS_NEW.length; renderCard(); }, 4000);
+
+  // ---- progress ----
+  function currentStage() {
+    for (var i = 0; i < STAGES.length; i++) if (pct < STAGES[i].until) return STAGES[i];
+    return STAGES[STAGES.length - 1];
+  }
+  function paint() {
+    var p = Math.round(pct);
+    $("percent").textContent = p;
+    $("bar").style.width = p + "%";
+    $("stage-label").textContent = currentStage().label;
+    $("heading").textContent = p >= 100 ? "Update complete" : "Updating software…";
+  }
+  paint();
+
+  // START PROGRESS — replace with real update % from the device/agent.
+  var timer = setInterval(function () {
+    if (pct >= 100) { pct = 100; paint(); clearInterval(timer); return; }
+    pct = Math.min(100, pct + Math.random() * 3.5);
+    paint();
+  }, 900);
+})();
+</script>
+</body>
+</html>
